@@ -3,19 +3,45 @@
 from __future__ import annotations
 
 import argparse
+import os
 import time
 from collections import defaultdict
+from pathlib import Path
 from urllib.parse import urlparse
 
 import cv2
 import numpy as np
 import torch
-from transformers import AutoModel, AutoProcessor
 
 from ultralytics import YOLO
 from ultralytics.data.loaders import get_best_youtube_url
 from ultralytics.utils.plotting import Annotator
 from ultralytics.utils.torch_utils import select_device
+
+# Default zero-shot video classifier (download from ModelScope, same repo id as on Hugging Face).
+DEFAULT_MODELSCOPE_VIDEO_MODEL = "microsoft/xclip-base-patch32"
+
+# Optional aliases; ModelScope hosts these under the same ``microsoft/xclip-*`` ids.
+HF_TO_MODELSCOPE: dict[str, str] = {
+    "microsoft/xclip-base-patch32": "microsoft/xclip-base-patch32",
+    "microsoft/xclip-base-patch16-zero-shot": "microsoft/xclip-base-patch16-zero-shot",
+    "microsoft/xclip-base-patch16": "microsoft/xclip-base-patch16",
+}
+
+
+def resolve_modelscope_model_id(model_name: str) -> str:
+    """Map legacy Hugging Face ids or return a local directory path / ModelScope model id."""
+    if Path(model_name).is_dir():
+        return str(Path(model_name).resolve())
+    return HF_TO_MODELSCOPE.get(model_name, model_name)
+
+
+def download_modelscope_model(model_id: str) -> str:
+    """Download model weights from ModelScope and return the local cache directory."""
+    from modelscope import snapshot_download
+
+    print(f"Downloading video classifier from ModelScope: {model_id}")
+    return snapshot_download(model_id)
 
 
 class TorchVisionVideoClassifier:
@@ -153,27 +179,22 @@ class TorchVisionVideoClassifier:
         return pred_labels, pred_confs
 
 
-class HuggingFaceVideoClassifier:
-    """Zero-shot video classifier using Hugging Face transformer models.
+class ModelScopeVideoClassifier:
+    """Zero-shot video classifier using models downloaded from ModelScope.
 
-    This class provides an interface for zero-shot video classification using Hugging Face models, supporting custom
-    label sets and various transformer architectures for video understanding.
+    Weights are fetched from https://modelscope.cn (not huggingface.co). Inference still uses the local
+    ``transformers`` checkpoint format with ``local_files_only=True``.
 
     Attributes:
         fp16 (bool): Whether to use FP16 for inference.
         labels (list[str]): List of labels for zero-shot classification.
         device (torch.device): The device on which the model is loaded.
-        processor (transformers.AutoProcessor): The processor for the model.
-        model (transformers.AutoModel): The loaded Hugging Face model.
-
-    Methods:
-        preprocess_crops_for_video_cls: Preprocesses crops for video classification.
-        __call__: Performs inference on the given sequences.
-        postprocess: Postprocesses the model's output.
+        processor: The processor for the model.
+        model: The loaded transformer model.
 
     Examples:
         >>> labels = ["walking", "running", "dancing"]
-        >>> classifier = HuggingFaceVideoClassifier(labels, device="cpu")
+        >>> classifier = ModelScopeVideoClassifier(labels, device="cpu")
         >>> crops = [np.random.randint(0, 255, (224, 224, 3), dtype=np.uint8) for _ in range(8)]
         >>> tensor = classifier.preprocess_crops_for_video_cls(crops)
         >>> outputs = classifier(tensor)
@@ -183,26 +204,35 @@ class HuggingFaceVideoClassifier:
     def __init__(
         self,
         labels: list[str],
-        model_name: str = "microsoft/xclip-base-patch16-zero-shot",
+        model_name: str = DEFAULT_MODELSCOPE_VIDEO_MODEL,
         device: str | torch.device = "",
         fp16: bool = False,
     ):
-        """Initialize the HuggingFaceVideoClassifier with the specified model name.
+        """Initialize ModelScopeVideoClassifier.
 
         Args:
             labels (list[str]): List of labels for zero-shot classification.
-            model_name (str): The name of the model to use.
+            model_name (str): ModelScope model id, legacy ``microsoft/xclip-*`` id, or local directory path.
             device (str | torch.device): The device to run the model on.
             fp16 (bool): Whether to use FP16 for inference.
         """
+        from transformers import AutoModel, AutoProcessor
+
         self.fp16 = fp16
         self.labels = labels
         self.device = select_device(device)
-        self.processor = AutoProcessor.from_pretrained(model_name)
-        model = AutoModel.from_pretrained(model_name).to(self.device)
+
+        model_id = resolve_modelscope_model_id(model_name)
+        model_dir = model_id if Path(model_id).is_dir() else download_modelscope_model(model_id)
+
+        # Prevent transformers from contacting huggingface.co during load.
+        os.environ["HF_HUB_OFFLINE"] = "1"
+        self.processor = AutoProcessor.from_pretrained(model_dir, local_files_only=True)
+        model = AutoModel.from_pretrained(model_dir, local_files_only=True).to(self.device)
         if fp16:
             model = model.half()
         self.model = model.eval()
+        print(f"Loaded video classifier from: {model_dir}")
 
     def preprocess_crops_for_video_cls(
         self, crops: list[np.ndarray], input_size: list[int] | None = None
@@ -280,6 +310,10 @@ class HuggingFaceVideoClassifier:
         return pred_labels, pred_confs
 
 
+# Backward-compatible alias (legacy name in docs and forks).
+HuggingFaceVideoClassifier = ModelScopeVideoClassifier
+
+
 def crop_and_pad(frame: np.ndarray, box: list[float], margin_percent: int) -> np.ndarray:
     """Crop box with margin and take square crop from frame.
 
@@ -321,7 +355,7 @@ def run(
     skip_frame: int = 2,
     video_cls_overlap_ratio: float = 0.25,
     fp16: bool = False,
-    video_classifier_model: str = "microsoft/xclip-base-patch32",
+    video_classifier_model: str = DEFAULT_MODELSCOPE_VIDEO_MODEL,
     labels: list[str] | None = None,
 ) -> None:
     """Run action recognition on a video source using YOLO for object detection and a video classifier.
@@ -359,7 +393,7 @@ def run(
         )
         video_classifier = TorchVisionVideoClassifier(video_classifier_model, device=device)
     else:
-        video_classifier = HuggingFaceVideoClassifier(
+        video_classifier = ModelScopeVideoClassifier(
             labels, model_name=video_classifier_model, device=device, fp16=fp16
         )
 
@@ -487,7 +521,10 @@ def parse_opt() -> argparse.Namespace:
     )
     parser.add_argument("--fp16", action="store_true", help="use FP16 for inference")
     parser.add_argument(
-        "--video-classifier-model", type=str, default="microsoft/xclip-base-patch32", help="video classifier model name"
+        "--video-classifier-model",
+        type=str,
+        default=DEFAULT_MODELSCOPE_VIDEO_MODEL,
+        help="ModelScope model id, legacy microsoft/xclip-* id, local model dir, or TorchVision name (e.g. s3d)",
     )
     parser.add_argument(
         "--labels",

@@ -32,7 +32,7 @@ Here are the basic commands for running inference:
 
 ### Note
 
-The action recognition model will automatically perform [object detection](https://www.ultralytics.com/glossary/object-detection) and [tracking](https://docs.ultralytics.com/modes/track) for people in the video, and classify their actions based on the specified labels. The results will be displayed in real-time on the video output. You can customize the action labels by modifying the `--labels` argument when running the [Python](https://www.python.org/) script. This utilizes a video classifier model, often sourced from platforms like [Hugging Face Models](https://huggingface.co/models).
+The action recognition model will automatically perform [object detection](https://www.ultralytics.com/glossary/object-detection) and [tracking](https://docs.ultralytics.com/modes/track) for people in the video, and classify their actions based on the specified labels. The results will be displayed in real-time on the video output. You can customize the action labels by modifying the `--labels` argument when running the [Python](https://www.python.org/) script. This utilizes a zero-shot video classifier downloaded from [ModelScope](https://modelscope.cn/) (no `huggingface.co` access required). Legacy `microsoft/xclip-*` names are mapped automatically.
 
 ```bash
 # Quick start with default video and labels
@@ -53,13 +53,13 @@ python action_recognition.py --device cpu
 # Use a different video classifier model from TorchVision
 python action_recognition.py --video-classifier-model "s3d"
 
-# Use FP16 (half-precision) for faster inference (only for HuggingFace models)
+# Use FP16 (half-precision) for faster inference (only for ModelScope/transformer models)
 python action_recognition.py --fp16
 
 # Export the output video with recognized actions to an mp4 file
 python action_recognition.py --output-path output.mp4
 
-# Combine multiple options: specific YouTube source, GPU device 0, specific HuggingFace model, custom labels, and FP16
+# Combine multiple options: specific YouTube source, GPU device 0, ModelScope XCLIP model, custom labels, and FP16
 python action_recognition.py --source "https://www.youtube.com/watch?v=dQw4w9WgXcQ" --device 0 --video-classifier-model "microsoft/xclip-base-patch32" --labels "dancing" "singing a song" --fp16
 ```
 
@@ -73,8 +73,8 @@ python action_recognition.py --source "https://www.youtube.com/watch?v=dQw4w9WgX
 - `--num-video-sequence-samples`: Number of video frames sampled from a sequence to feed into the classifier (default: `8`).
 - `--skip-frame`: Number of frames to skip between detections to speed up processing (default: `2`).
 - `--video-cls-overlap-ratio`: Overlap ratio between consecutive video sequences sent for classification (default: `0.25`).
-- `--fp16`: Use [FP16 (half-precision)](https://www.ultralytics.com/glossary/half-precision) for inference, potentially speeding it up on compatible hardware (only applicable to Hugging Face models).
-- `--video-classifier-model`: Name or path of the video classifier model (default: `"microsoft/xclip-base-patch32"`). Can be a Hugging Face model name or a [TorchVision model](https://docs.pytorch.org/vision/stable/models.html) name.
+- `--fp16`: Use [FP16 (half-precision)](https://www.ultralytics.com/glossary/half-precision) for inference, potentially speeding it up on compatible hardware (only applicable to ModelScope/transformer models).
+- `--video-classifier-model`: ModelScope model id (e.g. `microsoft/xclip-base-patch32`), local model directory, or a [TorchVision model](https://docs.pytorch.org/vision/stable/models.html) name (default: `"microsoft/xclip-base-patch32"`).
 - `--labels`: A list of text labels for zero-shot video classification (default: `["dancing", "singing a song"]`).
 
 ## 🤔 FAQ
@@ -95,8 +95,9 @@ You can adjust these labels to match the specific actions you want the system to
 
 Additionally, you can choose between different video classification models:
 
-1.  **Hugging Face Models**: You can use any compatible video classification model available on Hugging Face Hub. The default is:
-    - `"microsoft/xclip-base-patch32"`
+1.  **ModelScope Models** (default): XCLIP weights are downloaded from [ModelScope](https://modelscope.cn) (not `huggingface.co`). Examples:
+    - `"microsoft/xclip-base-patch32"` (default)
+    - `"microsoft/xclip-base-patch16-zero-shot"`
 2.  **TorchVision Models**: These models do not support zero-shot classification with custom text labels but offer pre-trained classification capabilities. Options include:
     - `"s3d"`
     - `"r3d_18"`
